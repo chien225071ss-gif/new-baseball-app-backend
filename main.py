@@ -1,0 +1,455 @@
+import sqlite3
+import pandas as pd
+import os
+import requests
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pybaseball import playerid_reverse_lookup
+import uvicorn
+
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+except ImportError:
+    psycopg2 = None
+    RealDictCursor = None
+
+app = FastAPI()
+
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PUBLIC_DB_FILENAME = os.getenv("BASEBALL_DB_FILENAME", "baseball_data_2023_2025.db")
+DB_PATH = os.path.join(BASE_DIR, PUBLIC_DB_FILENAME)
+FULL_DB_PATH = os.path.join(BASE_DIR, "baseball_data.db")
+LOCAL_DESKTOP_DB_PATH = os.path.abspath(os.path.join(BASE_DIR, "..", "baseball_data.db"))
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+batter_name_map = {}
+TABLE_NAME = "pitches" 
+
+OUT_EVENTS = {
+    "field_out", "strikeout", "force_out", "grounded_into_double_play",
+    "fielders_choice", "fielders_choice_out", "double_play",
+    "sac_fly", "sac_bunt", "strikeout_double_play"
+}
+
+RESULT_ORDER = ["ball", "called_strike", "swinging_strike", "foul", "in_play_out", "in_play_hit"]
+
+def active_db_path():
+    if os.path.exists(DB_PATH):
+        return DB_PATH
+    if os.path.exists(FULL_DB_PATH):
+        return FULL_DB_PATH
+    if os.path.exists(LOCAL_DESKTOP_DB_PATH):
+        return LOCAL_DESKTOP_DB_PATH
+    return DB_PATH
+
+def using_postgres():
+    return bool(DATABASE_URL)
+
+def db_placeholder():
+    return "%s" if using_postgres() else "?"
+
+def connect_db(dict_rows=False):
+    if using_postgres():
+        if psycopg2 is None:
+            raise RuntimeError("DATABASE_URL is set, but psycopg2-binary is not installed")
+        cursor_factory = RealDictCursor if dict_rows else None
+        return psycopg2.connect(DATABASE_URL, cursor_factory=cursor_factory)
+
+    conn = sqlite3.connect(active_db_path())
+    if dict_rows:
+        conn.row_factory = sqlite3.Row
+    return conn
+
+def fetch_all_dicts(query, params=None):
+    conn = connect_db(dict_rows=True)
+    cursor = conn.cursor()
+    cursor.execute(query, params or [])
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return [dict(row) for row in rows]
+
+def table_names(conn):
+    cursor = conn.cursor()
+    if using_postgres():
+        cursor.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+    else:
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    tables = [row[0] for row in cursor.fetchall()]
+    cursor.close()
+    return tables
+
+def pct(part, total):
+    return round((part / total) * 100, 1) if total else 0
+
+def result_type(row):
+    pitch_type = row.get("type")
+    description = row.get("description") or ""
+    events = row.get("events") or ""
+
+    if pitch_type == "B":
+        return "ball"
+    if description == "called_strike":
+        return "called_strike"
+    if "swinging_strike" in description:
+        return "swinging_strike"
+    if description == "foul":
+        return "foul"
+    if pitch_type == "X":
+        return "in_play_out" if events in OUT_EVENTS or "out" in events else "in_play_hit"
+    return "other"
+
+def build_pitch_filters(
+    year=None,
+    pitcherId=None,
+    batterId=None,
+    pitcherRole="All",
+    zone=None,
+    pitchType=None,
+    balls=None,
+    strikes=None,
+    pitcherHand=None,
+):
+    placeholder = db_placeholder()
+    null_vals = {"", "none", "null", "undefined", "all"}
+    conds = []
+    params = []
+
+    y = str(year).strip() if year else "ALL"
+    p_id = str(pitcherId).strip() if pitcherId else ""
+    b_id = str(batterId).strip() if batterId else ""
+    role = str(pitcherRole).strip() if pitcherRole else "All"
+    z = str(zone).strip() if zone else ""
+    pt = str(pitchType).strip() if pitchType else ""
+    b = str(balls).strip() if balls is not None else ""
+    s = str(strikes).strip() if strikes is not None else ""
+    hand = str(pitcherHand).strip() if pitcherHand else ""
+
+    if p_id.lower() in null_vals and b_id.lower() in null_vals:
+        return None, None
+
+    if y.upper() != "ALL":
+        conds.append(f"substr(game_date, 1, 4) = {placeholder}")
+        params.append(y)
+    if p_id.lower() not in null_vals and p_id != "0":
+        pitcher_ids = [x.strip() for x in p_id.split(",") if x.strip().isdigit()]
+        if pitcher_ids:
+            conds.append(f"pitcher IN ({','.join([placeholder] * len(pitcher_ids))})")
+            params.extend(pitcher_ids)
+    if b_id.lower() not in null_vals and b_id != "0":
+        conds.append(f"batter = {placeholder}")
+        params.append(b_id)
+    if role.lower() not in null_vals:
+        conds.append(f"pitcher_role = {placeholder}")
+        params.append(role)
+    if hand.lower() not in null_vals:
+        conds.append(f"p_throws = {placeholder}")
+        params.append(hand)
+    if z and z.lower() not in null_vals:
+        zones = [int(x) for x in z.split(",") if x.strip().isdigit()]
+        if zones:
+            conds.append(f"zone IN ({','.join([placeholder] * len(zones))})")
+            params.extend(zones)
+    if pt and pt.lower() not in null_vals:
+        pitch_types = [x.strip() for x in pt.split(",") if x.strip()]
+        if pitch_types:
+            conds.append(f"pitch_type IN ({','.join([placeholder] * len(pitch_types))})")
+            params.extend(pitch_types)
+    if b and b.lower() not in null_vals:
+        conds.append(f"balls = {placeholder}")
+        params.append(b)
+    if s and s.lower() not in null_vals:
+        conds.append(f"strikes = {placeholder}")
+        params.append(s)
+
+    where = " WHERE " + " AND ".join(conds) if conds else ""
+    return where, params
+
+def summarize_rows(rows):
+    total = len(rows)
+    if total == 0:
+        empty_zones = {
+            z: {
+                "total": 0, "ball": 0, "called_strike": 0, "swinging_strike": 0,
+                "foul": 0, "in_play_out": 0, "in_play_hit": 0,
+                "whiffRate": 0, "outRate": 0, "foulRate": 0
+            }
+            for z in range(1, 10)
+        }
+        return {
+            "total": 0,
+            "summaryStats": None,
+            "resultData": [],
+            "pitchTypeData": [],
+            "zoneData": empty_zones,
+        }
+
+    result_counts = {key: 0 for key in RESULT_ORDER}
+    pitch_types = {}
+    zones = {
+        z: {
+            "total": 0, "ball": 0, "called_strike": 0, "swinging_strike": 0,
+            "foul": 0, "in_play_out": 0, "in_play_hit": 0
+        }
+        for z in range(1, 10)
+    }
+
+    for row in rows:
+        row_dict = dict(row)
+        result = result_type(row_dict)
+        if result not in result_counts:
+            continue
+
+        result_counts[result] += 1
+
+        pitch_type = row_dict.get("pitch_type") or "Unknown"
+        if pitch_type not in pitch_types:
+            pitch_types[pitch_type] = {
+                "total": 0, "ball": 0, "called_strike": 0, "swinging_strike": 0,
+                "foul": 0, "in_play_out": 0, "in_play_hit": 0
+            }
+        pitch_types[pitch_type]["total"] += 1
+        pitch_types[pitch_type][result] += 1
+
+        try:
+            zone_num = int(row_dict.get("zone"))
+        except (TypeError, ValueError):
+            zone_num = 0
+        if 1 <= zone_num <= 9:
+            zones[zone_num]["total"] += 1
+            zones[zone_num][result] += 1
+
+    swings = result_counts["swinging_strike"] + result_counts["foul"] + result_counts["in_play_out"] + result_counts["in_play_hit"]
+    in_play = result_counts["in_play_out"] + result_counts["in_play_hit"]
+
+    result_data = [
+        {"result": key, "count": count, "pct": pct(count, total)}
+        for key, count in result_counts.items()
+        if count > 0
+    ]
+
+    pitch_type_data = []
+    for pitch_type, data in pitch_types.items():
+        type_total = data["total"]
+        type_swings = data["swinging_strike"] + data["foul"] + data["in_play_out"] + data["in_play_hit"]
+        pitch_type_data.append({
+            "pitchType": pitch_type,
+            "count": type_total,
+            "pct": pct(type_total, total),
+            "ballPct": pct(data["ball"], type_total),
+            "cswPct": pct(data["called_strike"] + data["swinging_strike"], type_total),
+            "whiffPct": pct(data["swinging_strike"], type_swings),
+            "inPlayPct": pct(data["in_play_out"] + data["in_play_hit"], type_total),
+            "hitPct": pct(data["in_play_hit"], type_total),
+        })
+    pitch_type_data.sort(key=lambda x: x["count"], reverse=True)
+
+    zone_data = {}
+    for zone_num, data in zones.items():
+        zone_swings = data["swinging_strike"] + data["foul"] + data["in_play_out"] + data["in_play_hit"]
+        zone_total = data["total"]
+        zone_data[zone_num] = {
+            **data,
+            "whiffRate": data["swinging_strike"] / zone_swings if zone_swings else 0,
+            "outRate": data["in_play_out"] / zone_total if zone_total else 0,
+            "foulRate": data["foul"] / zone_total if zone_total else 0,
+        }
+
+    return {
+        "total": total,
+        "summaryStats": {
+            "total": total,
+            "strikeRate": pct(total - result_counts["ball"], total),
+            "swingRate": pct(swings, total),
+            "whiffRate": pct(result_counts["swinging_strike"], swings),
+            "cswRate": pct(result_counts["called_strike"] + result_counts["swinging_strike"], total),
+            "babip": pct(result_counts["in_play_hit"], in_play),
+        },
+        "resultData": result_data,
+        "pitchTypeData": pitch_type_data,
+        "zoneData": zone_data,
+    }
+
+@app.on_event("startup")
+async def startup_event():
+    global batter_name_map, TABLE_NAME
+
+    if not using_postgres():
+        # --- 1. 下載邏輯 (使用 Dropbox 直連) ---
+        DB_URL = os.getenv(
+            "BASEBALL_DB_URL",
+            "https://www.dropbox.com/scl/fi/vvytrbedvwfamdx3uqhjv/baseball_data.db?rlkey=jx3t30rwcrxu8sqjqlkwz2xgz&st=rqm3pqhf&dl=1"
+        )
+
+        db_path = active_db_path()
+
+        if os.path.exists(db_path):
+            if os.path.getsize(db_path) < 100 * 1024 * 1024:
+                print("偵測到上次下載不完整的殘留檔案，正在清理並重新下載...")
+                os.remove(db_path)
+                db_path = DB_PATH
+
+        if not os.path.exists(db_path):
+            print("正在從 Dropbox 下載大型資料庫，這可能需要幾分鐘，請保持耐心...")
+            try:
+                response = requests.get(DB_URL, stream=True)
+                response.raise_for_status()
+
+                with open(DB_PATH, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=65536):
+                        if chunk:
+                            f.write(chunk)
+
+                actual_size = os.path.getsize(DB_PATH) / (1024 * 1024)
+                print(f"下載完成！實際檔案大小: {actual_size:.2f} MB")
+
+            except Exception as e:
+                print(f"下載失敗: {e}")
+                if os.path.exists(DB_PATH):
+                    os.remove(DB_PATH)
+                return
+
+    # --- 2. 資料庫讀取邏輯 ---
+    try:
+        conn = connect_db()
+        tables = table_names(conn)
+        if "pitches" in tables: 
+            TABLE_NAME = "pitches"
+        elif tables: 
+            TABLE_NAME = tables[0]
+        else:
+            print("警告: 資料庫中找不到任何資料表")
+            conn.close()
+            return
+
+        print("正在讀取打者清單並進行名稱轉換 (這一步連線較久)...")
+        u_ids = pd.read_sql(f"SELECT DISTINCT batter FROM {TABLE_NAME} WHERE batter IS NOT NULL", conn)["batter"].tolist()
+        conn.close()
+        
+        if u_ids:
+            # 這裡會從網路抓取打者姓名，可能需要 1-2 分鐘
+            lookup_df = playerid_reverse_lookup(u_ids, key_type='mlbam')
+            for _, row in lookup_df.iterrows():
+                batter_name_map[str(row['key_mlbam'])] = f"{row['name_last'].title()}, {row['name_first'].title()}"
+        
+        backend = "PostgreSQL" if using_postgres() else "SQLite"
+        print(f"✅ 後端初始化完成，使用 {backend} 資料庫！")
+
+    except Exception as e:
+        print(f"❌ 啟動出錯: {e}")
+@app.get("/api/batters")
+async def get_batters():
+    return sorted([{"id": k, "name": v} for k, v in batter_name_map.items()], key=lambda x: x['name'])
+
+@app.get("/api/pitchers")
+async def get_pitchers():
+    try:
+        conn = connect_db()
+        df = pd.read_sql(f"SELECT DISTINCT pitcher, player_name FROM {TABLE_NAME} WHERE player_name IS NOT NULL", conn)
+        conn.close()
+        return [{"id": str(int(row['pitcher'])), "name": row['player_name']} for _, row in df.iterrows()]
+    except:
+        return []
+
+@app.get("/api/pitches")
+async def get_pitches(
+    year: str = None, 
+    pitcherId: str = None, 
+    batterId: str = None, 
+    pitcherRole: str = "All",
+    zone: str = None,
+    pitchType: str = None,  # ⚾ 新增：接收球種
+    balls: str = None,      # ⚾ 新增：接收壞球數
+    strikes: str = None     # ⚾ 新增：接收好球數
+):
+    try:
+        where, params = build_pitch_filters(
+            year=year,
+            pitcherId=pitcherId,
+            batterId=batterId,
+            pitcherRole=pitcherRole,
+            zone=zone,
+            pitchType=pitchType,
+            balls=balls,
+            strikes=strikes,
+        )
+
+        if where is None:
+            return []
+
+        query = f"SELECT * FROM {TABLE_NAME}{where} ORDER BY game_date DESC LIMIT 50000"
+
+        conn = connect_db()
+        df = pd.read_sql(query, conn, params=params)
+        conn.close()
+
+        if df.empty:
+            return []
+
+        col_map = {
+            'pitch_type': 'pitchType', 
+            'release_speed': 'speed', 
+            'plate_x': 'plateX', 
+            'plate_z': 'plateZ',
+            'is_out': 'isOut'
+        }
+        for old, new in col_map.items():
+            if old in df.columns:
+                df[new] = df[old]
+            
+        # 清洗 NaN
+        records = df.to_dict(orient='records')
+        return [{k: (None if pd.isna(v) else v) for k, v in row.items()} for row in records]
+
+    except Exception as e:
+        print(f"❌ API 錯誤: {e}")
+        return []
+
+@app.get("/api/pitches/summary")
+async def get_pitch_summary(
+    year: str = None,
+    pitcherId: str = None,
+    batterId: str = None,
+    pitcherRole: str = "All",
+    zone: str = None,
+    pitchType: str = None,
+    balls: str = None,
+    strikes: str = None,
+    pitcherHand: str = None,
+):
+    try:
+        where, params = build_pitch_filters(
+            year=year,
+            pitcherId=pitcherId,
+            batterId=batterId,
+            pitcherRole=pitcherRole,
+            zone=zone,
+            pitchType=pitchType,
+            balls=balls,
+            strikes=strikes,
+            pitcherHand=pitcherHand,
+        )
+
+        if where is None:
+            return summarize_rows([])
+
+        query = f"""
+            SELECT pitch_type, zone, description, type, events
+            FROM {TABLE_NAME}
+            {where}
+        """
+
+        rows = fetch_all_dicts(query, params)
+
+        return summarize_rows(rows)
+
+    except Exception as e:
+        print(f"❌ Summary API 錯誤: {e}")
+        return summarize_rows([])
+    
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
