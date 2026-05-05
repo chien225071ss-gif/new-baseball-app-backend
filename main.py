@@ -82,6 +82,31 @@ def table_names(conn):
     cursor.close()
     return tables
 
+def load_player_names(conn, player_ids):
+    if not player_ids:
+        return {}
+
+    tables = table_names(conn)
+    if "player_names" not in tables:
+        return {}
+
+    placeholder = db_placeholder()
+    ids = [str(int(player_id)) for player_id in player_ids if pd.notna(player_id)]
+    names = {}
+
+    for i in range(0, len(ids), 500):
+        chunk = ids[i:i + 500]
+        query = f"""
+            SELECT player_id, name
+            FROM player_names
+            WHERE player_id IN ({','.join([placeholder] * len(chunk))})
+        """
+        df = pd.read_sql(query, conn, params=chunk)
+        for _, row in df.iterrows():
+            names[str(int(row["player_id"]))] = row["name"]
+
+    return names
+
 def pct(part, total):
     return round((part / total) * 100, 1) if total else 0
 
@@ -327,13 +352,24 @@ async def startup_event():
 
         print("正在讀取打者清單並進行名稱轉換 (這一步連線較久)...")
         u_ids = pd.read_sql(f"SELECT DISTINCT batter FROM {TABLE_NAME} WHERE batter IS NOT NULL", conn)["batter"].tolist()
+        stored_names = load_player_names(conn, u_ids)
         conn.close()
-        
-        if u_ids:
-            # 這裡會從網路抓取打者姓名，可能需要 1-2 分鐘
-            lookup_df = playerid_reverse_lookup(u_ids, key_type='mlbam')
-            for _, row in lookup_df.iterrows():
-                batter_name_map[str(row['key_mlbam'])] = f"{row['name_last'].title()}, {row['name_first'].title()}"
+
+        batter_name_map = {
+            str(int(batter_id)): stored_names.get(str(int(batter_id)), f"Batter {int(batter_id)}")
+            for batter_id in u_ids
+            if pd.notna(batter_id)
+        }
+
+        missing_ids = [int(batter_id) for batter_id in u_ids if pd.notna(batter_id) and str(int(batter_id)) not in stored_names]
+        if missing_ids:
+            try:
+                # 這裡只補查 player_names 尚未涵蓋的球員。
+                lookup_df = playerid_reverse_lookup(missing_ids, key_type='mlbam')
+                for _, row in lookup_df.iterrows():
+                    batter_name_map[str(row['key_mlbam'])] = f"{row['name_last'].title()}, {row['name_first'].title()}"
+            except Exception as e:
+                print(f"⚠️ 打者姓名轉換失敗，改用 batter ID 顯示: {e}")
         
         backend = "PostgreSQL" if using_postgres() else "SQLite"
         print(f"✅ 後端初始化完成，使用 {backend} 資料庫！")
