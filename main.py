@@ -35,6 +35,7 @@ OUT_EVENTS = {
 }
 
 RESULT_ORDER = ["ball", "called_strike", "swinging_strike", "foul", "in_play_out", "in_play_hit"]
+DISPLAY_ZONES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14]
 
 def active_db_path():
     if os.path.exists(DB_PATH):
@@ -202,7 +203,7 @@ def summarize_rows(rows):
                 "foul": 0, "in_play_out": 0, "in_play_hit": 0,
                 "whiffRate": 0, "outRate": 0, "foulRate": 0
             }
-            for z in range(1, 10)
+            for z in DISPLAY_ZONES
         }
         return {
             "total": 0,
@@ -219,7 +220,7 @@ def summarize_rows(rows):
             "total": 0, "ball": 0, "called_strike": 0, "swinging_strike": 0,
             "foul": 0, "in_play_out": 0, "in_play_hit": 0
         }
-        for z in range(1, 10)
+        for z in DISPLAY_ZONES
     }
 
     for row in rows:
@@ -243,7 +244,7 @@ def summarize_rows(rows):
             zone_num = int(row_dict.get("zone"))
         except (TypeError, ValueError):
             zone_num = 0
-        if 1 <= zone_num <= 9:
+        if zone_num in zones:
             zones[zone_num]["total"] += 1
             zones[zone_num][result] += 1
 
