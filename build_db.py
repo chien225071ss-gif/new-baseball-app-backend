@@ -10,12 +10,12 @@ import os
 pybaseball.cache.enable()
 
 def create_database():
-    db_file = "baseball_data.db"
+    db_file = os.getenv("BASEBALL_DB_FILENAME", "baseball_data.db")
     
     # 💡 專業建議：如果你發現舊資料沒名字或沒出局標記，建議刪除原有的 baseball_data.db 重新執行
     conn = sqlite3.connect(db_file)
-    start_year = 2015
-    current_year = datetime.date.today().year
+    start_year = int(os.getenv("START_YEAR", "2023"))
+    current_year = int(os.getenv("END_YEAR", "2025"))
     
     print(f"🚀 開始建立 2015-{current_year} 棒球資料庫 (含姓名、出局標記與篩選器索引)...")
 
@@ -61,7 +61,7 @@ def create_database():
                     # balls, strikes (對應 COUNT), pitch_type (對應 PITCH TYPE) 已經在裡面了！
                     keep_cols = [
                         'game_date', 'pitch_type', 'balls', 'strikes', 'stand', 'p_throws', 
-                        'on_1b', 'on_2b', 'on_3b', 'pitcher_role', 'inning',
+                        'on_1b', 'on_2b', 'on_3b', 'pitcher_role', 'inning', 'outs_when_up',
                         'release_speed', 'plate_x', 'plate_z', 'description', 'type', 
                         'zone', 'player_name', 'pitcher', 'batter', 'events'
                     ]
@@ -91,6 +91,8 @@ def create_database():
                     # 強制將球數轉為整數
                     df_to_save['balls'] = df_to_save['balls'].astype(int)
                     df_to_save['strikes'] = df_to_save['strikes'].astype(int)
+                    if 'outs_when_up' in df_to_save.columns:
+                        df_to_save['outs_when_up'] = df_to_save['outs_when_up'].fillna(0).astype(int)
 
                     # 存入資料庫
                     df_to_save.to_sql("pitches", conn, if_exists="append", index=False)
@@ -102,6 +104,7 @@ def create_database():
                     conn.execute("CREATE INDEX IF NOT EXISTS idx_gdate ON pitches(game_date)")
                     conn.execute("CREATE INDEX IF NOT EXISTS idx_ptype ON pitches(pitch_type)")
                     conn.execute("CREATE INDEX IF NOT EXISTS idx_count ON pitches(balls, strikes)")
+                    conn.execute("CREATE INDEX IF NOT EXISTS idx_outs ON pitches(outs_when_up)")
                     
                     time.sleep(1)
 

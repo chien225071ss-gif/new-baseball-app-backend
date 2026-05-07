@@ -36,6 +36,25 @@ OUT_EVENTS = {
 
 RESULT_ORDER = ["ball", "called_strike", "swinging_strike", "foul", "in_play_out", "in_play_hit"]
 DISPLAY_ZONES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 14]
+OUTCOME_ORDER = [
+    "BB", "HBP", "1B", "2B", "3B", "HR", "K", "Out", "DP", "FC", "ROE",
+    "Ball", "Called Strike", "Swinging Strike", "Foul", "In Play", "Other",
+]
+RUN_VALUE = {
+    "BB": 0.32,
+    "HBP": 0.34,
+    "1B": 0.47,
+    "2B": 0.78,
+    "3B": 1.09,
+    "HR": 1.40,
+    "K": -0.29,
+    "Out": -0.25,
+    "DP": -0.55,
+    "FC": -0.18,
+    "ROE": 0.45,
+    "In Play": 0.00,
+    "Other": 0.00,
+}
 
 def active_db_path():
     if os.path.exists(DB_PATH):
@@ -138,6 +157,7 @@ def build_pitch_filters(
     balls=None,
     strikes=None,
     pitcherHand=None,
+    outs=None,
     on1b=None,
     on2b=None,
     on3b=None,
@@ -156,14 +176,12 @@ def build_pitch_filters(
     b = str(balls).strip() if balls is not None else ""
     s = str(strikes).strip() if strikes is not None else ""
     hand = str(pitcherHand).strip() if pitcherHand else ""
+    out_count = str(outs).strip() if outs is not None else ""
     runner_filters = [
         ("on_1b", str(on1b).strip() if on1b is not None else ""),
         ("on_2b", str(on2b).strip() if on2b is not None else ""),
         ("on_3b", str(on3b).strip() if on3b is not None else ""),
     ]
-
-    if p_id.lower() in null_vals and b_id.lower() in null_vals:
-        return None, None
 
     if y.upper() != "ALL":
         conds.append(f"substr(game_date, 1, 4) = {placeholder}")
@@ -182,6 +200,9 @@ def build_pitch_filters(
     if hand.lower() not in null_vals:
         conds.append(f"p_throws = {placeholder}")
         params.append(hand)
+    if out_count and out_count.lower() not in null_vals:
+        conds.append(f"outs_when_up = {placeholder}")
+        params.append(out_count)
     if z and z.lower() not in null_vals:
         zones = [int(x) for x in z.split(",") if x.strip().isdigit()]
         if zones:
@@ -203,8 +224,129 @@ def build_pitch_filters(
             conds.append(f"COALESCE({col}, 0) = {placeholder}")
             params.append(1 if val == "1" else 0)
 
+    if not conds:
+        return None, None
+
     where = " WHERE " + " AND ".join(conds) if conds else ""
     return where, params
+
+def plate_outcome(row):
+    description = row.get("description") or ""
+    events = row.get("events") or ""
+    pitch_result = row.get("type") or ""
+
+    if events in {"walk", "intent_walk"}:
+        return "BB"
+    if events == "hit_by_pitch":
+        return "HBP"
+    if events == "single":
+        return "1B"
+    if events == "double":
+        return "2B"
+    if events == "triple":
+        return "3B"
+    if events == "home_run":
+        return "HR"
+    if events == "strikeout":
+        return "K"
+    if events in {"grounded_into_double_play", "double_play", "strikeout_double_play"}:
+        return "DP"
+    if events in {"fielders_choice", "fielders_choice_out"}:
+        return "FC"
+    if events == "field_error":
+        return "ROE"
+    if events in OUT_EVENTS or "out" in events:
+        return "Out"
+    if pitch_result == "B":
+        return "Ball"
+    if description == "called_strike":
+        return "Called Strike"
+    if "swinging_strike" in description:
+        return "Swinging Strike"
+    if description == "foul":
+        return "Foul"
+    if pitch_result == "X":
+        return "In Play"
+    return "Other"
+
+def pitch_run_value(outcome, balls=None, strikes=None):
+    if outcome in RUN_VALUE:
+        return RUN_VALUE[outcome]
+
+    try:
+        b = int(balls) if balls is not None else None
+        s = int(strikes) if strikes is not None else None
+    except (TypeError, ValueError):
+        b = None
+        s = None
+
+    if outcome == "Ball":
+        return RUN_VALUE["BB"] if b == 3 else 0.06
+    if outcome in {"Called Strike", "Swinging Strike"}:
+        return RUN_VALUE["K"] if s == 2 else -0.07
+    if outcome == "Foul":
+        return -0.04 if s is not None and s < 2 else 0.01
+    return 0.0
+
+def summarize_outcomes(rows):
+    total = len(rows)
+    counts = {key: 0 for key in OUTCOME_ORDER}
+    pitch_types = {}
+
+    for row in rows:
+        row_dict = dict(row)
+        outcome = plate_outcome(row_dict)
+        if outcome not in counts:
+            outcome = "Other"
+        counts[outcome] += 1
+
+        pitch_type = row_dict.get("pitch_type") or "Unknown"
+        if pitch_type not in pitch_types:
+            pitch_types[pitch_type] = {
+                "total": 0,
+                "runValue": 0.0,
+                "outcomes": {key: 0 for key in OUTCOME_ORDER},
+            }
+
+        rv = pitch_run_value(outcome, row_dict.get("balls"), row_dict.get("strikes"))
+        pitch_types[pitch_type]["total"] += 1
+        pitch_types[pitch_type]["runValue"] += rv
+        pitch_types[pitch_type]["outcomes"][outcome] += 1
+
+    outcomes = [
+        {"outcome": key, "count": count, "pct": pct(count, total)}
+        for key, count in counts.items()
+        if count > 0
+    ]
+
+    pitch_type_outcomes = []
+    for pitch_type, data in pitch_types.items():
+        type_total = data["total"]
+        type_outcomes = [
+            {"outcome": key, "count": count, "pct": pct(count, type_total)}
+            for key, count in data["outcomes"].items()
+            if count > 0
+        ]
+        expected_runs = round(data["runValue"] / type_total, 3) if type_total else 0
+        pitch_type_outcomes.append({
+            "pitchType": pitch_type,
+            "count": type_total,
+            "expectedRuns": expected_runs,
+            "winProbChange": round(-expected_runs * 9.0, 2),
+            "outRate": pct(
+                data["outcomes"]["K"] + data["outcomes"]["Out"] + data["outcomes"]["DP"] + data["outcomes"]["FC"],
+                type_total,
+            ),
+            "outcomes": type_outcomes,
+        })
+
+    pitch_type_outcomes.sort(key=lambda item: (item["expectedRuns"], -item["count"]))
+
+    return {
+        "total": total,
+        "outcomes": outcomes,
+        "pitchTypeOutcomes": pitch_type_outcomes,
+    }
 
 def summarize_rows(rows):
     total = len(rows)
@@ -416,6 +558,7 @@ async def get_pitches(
     on1b: str = None,
     on2b: str = None,
     on3b: str = None,
+    outs: str = None,
 ):
     try:
         where, params = build_pitch_filters(
@@ -427,6 +570,7 @@ async def get_pitches(
             pitchType=pitchType,
             balls=balls,
             strikes=strikes,
+            outs=outs,
             on1b=on1b,
             on2b=on2b,
             on3b=on3b,
@@ -477,6 +621,7 @@ async def get_pitch_summary(
     on1b: str = None,
     on2b: str = None,
     on3b: str = None,
+    outs: str = None,
 ):
     try:
         where, params = build_pitch_filters(
@@ -489,6 +634,7 @@ async def get_pitch_summary(
             balls=balls,
             strikes=strikes,
             pitcherHand=pitcherHand,
+            outs=outs,
             on1b=on1b,
             on2b=on2b,
             on3b=on3b,
@@ -510,6 +656,103 @@ async def get_pitch_summary(
     except Exception as e:
         print(f"❌ Summary API 錯誤: {e}")
         return summarize_rows([])
+
+@app.get("/api/pitches/outcomes")
+async def get_pitch_outcomes(
+    year: str = None,
+    pitcherId: str = None,
+    batterId: str = None,
+    pitcherRole: str = "All",
+    zone: str = None,
+    pitchType: str = None,
+    balls: str = None,
+    strikes: str = None,
+    pitcherHand: str = None,
+    on1b: str = None,
+    on2b: str = None,
+    on3b: str = None,
+    outs: str = None,
+):
+    try:
+        where, params = build_pitch_filters(
+            year=year,
+            pitcherId=pitcherId,
+            batterId=batterId,
+            pitcherRole=pitcherRole,
+            zone=zone,
+            pitchType=pitchType,
+            balls=balls,
+            strikes=strikes,
+            pitcherHand=pitcherHand,
+            outs=outs,
+            on1b=on1b,
+            on2b=on2b,
+            on3b=on3b,
+        )
+
+        if where is None:
+            return summarize_outcomes([])
+
+        query = f"""
+            SELECT pitch_type, balls, strikes, description, type, events
+            FROM {TABLE_NAME}
+            {where}
+        """
+        rows = fetch_all_dicts(query, params)
+        return summarize_outcomes(rows)
+
+    except Exception as e:
+        print(f"❌ Outcomes API 錯誤: {e}")
+        return summarize_outcomes([])
+
+@app.get("/api/pitches/predict")
+async def get_pitch_prediction(
+    year: str = None,
+    pitcherId: str = None,
+    batterId: str = None,
+    pitcherRole: str = "All",
+    balls: str = None,
+    strikes: str = None,
+    pitcherHand: str = None,
+    on1b: str = None,
+    on2b: str = None,
+    on3b: str = None,
+    outs: str = None,
+):
+    try:
+        where, params = build_pitch_filters(
+            year=year or "ALL",
+            pitcherId=pitcherId,
+            batterId=batterId,
+            pitcherRole=pitcherRole,
+            balls=balls,
+            strikes=strikes,
+            pitcherHand=pitcherHand,
+            outs=outs,
+            on1b=on1b,
+            on2b=on2b,
+            on3b=on3b,
+        )
+
+        if where is None:
+            return {"total": 0, "recommendations": []}
+
+        query = f"""
+            SELECT pitch_type, balls, strikes, description, type, events
+            FROM {TABLE_NAME}
+            {where}
+        """
+        rows = fetch_all_dicts(query, params)
+        summary = summarize_outcomes(rows)
+        return {
+            "total": summary["total"],
+            "recommendations": summary["pitchTypeOutcomes"][:6],
+            "model": "historical_linear_weights_v1",
+        }
+
+    except Exception as e:
+        print(f"❌ Prediction API 錯誤: {e}")
+        return {"total": 0, "recommendations": []}
     
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8000"))

@@ -24,6 +24,7 @@ COLUMNS = [
     "on_3b",
     "pitcher_role",
     "inning",
+    "outs_when_up",
     "release_speed",
     "plate_x",
     "plate_z",
@@ -50,6 +51,7 @@ CREATE TABLE IF NOT EXISTS pitches (
     on_3b INTEGER,
     pitcher_role TEXT,
     inning INTEGER,
+    outs_when_up INTEGER,
     release_speed DOUBLE PRECISION,
     plate_x DOUBLE PRECISION,
     plate_z DOUBLE PRECISION,
@@ -72,6 +74,7 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_pitch_type ON pitches(pitch_type)",
     "CREATE INDEX IF NOT EXISTS idx_zone ON pitches(zone)",
     "CREATE INDEX IF NOT EXISTS idx_count ON pitches(balls, strikes)",
+    "CREATE INDEX IF NOT EXISTS idx_outs ON pitches(outs_when_up)",
     "CREATE INDEX IF NOT EXISTS idx_public_filters ON pitches(pitcher, batter, game_date, pitcher_role)",
 ]
 
