@@ -138,6 +138,9 @@ def build_pitch_filters(
     balls=None,
     strikes=None,
     pitcherHand=None,
+    on1b=None,
+    on2b=None,
+    on3b=None,
 ):
     placeholder = db_placeholder()
     null_vals = {"", "none", "null", "undefined", "all"}
@@ -153,6 +156,11 @@ def build_pitch_filters(
     b = str(balls).strip() if balls is not None else ""
     s = str(strikes).strip() if strikes is not None else ""
     hand = str(pitcherHand).strip() if pitcherHand else ""
+    runner_filters = [
+        ("on_1b", str(on1b).strip() if on1b is not None else ""),
+        ("on_2b", str(on2b).strip() if on2b is not None else ""),
+        ("on_3b", str(on3b).strip() if on3b is not None else ""),
+    ]
 
     if p_id.lower() in null_vals and b_id.lower() in null_vals:
         return None, None
@@ -190,6 +198,10 @@ def build_pitch_filters(
     if s and s.lower() not in null_vals:
         conds.append(f"strikes = {placeholder}")
         params.append(s)
+    for col, val in runner_filters:
+        if val and val.lower() not in null_vals:
+            conds.append(f"COALESCE({col}, 0) = {placeholder}")
+            params.append(1 if val == "1" else 0)
 
     where = " WHERE " + " AND ".join(conds) if conds else ""
     return where, params
@@ -400,7 +412,10 @@ async def get_pitches(
     zone: str = None,
     pitchType: str = None,  # ⚾ 新增：接收球種
     balls: str = None,      # ⚾ 新增：接收壞球數
-    strikes: str = None     # ⚾ 新增：接收好球數
+    strikes: str = None,    # ⚾ 新增：接收好球數
+    on1b: str = None,
+    on2b: str = None,
+    on3b: str = None,
 ):
     try:
         where, params = build_pitch_filters(
@@ -412,6 +427,9 @@ async def get_pitches(
             pitchType=pitchType,
             balls=balls,
             strikes=strikes,
+            on1b=on1b,
+            on2b=on2b,
+            on3b=on3b,
         )
 
         if where is None:
@@ -456,6 +474,9 @@ async def get_pitch_summary(
     balls: str = None,
     strikes: str = None,
     pitcherHand: str = None,
+    on1b: str = None,
+    on2b: str = None,
+    on3b: str = None,
 ):
     try:
         where, params = build_pitch_filters(
@@ -468,6 +489,9 @@ async def get_pitch_summary(
             balls=balls,
             strikes=strikes,
             pitcherHand=pitcherHand,
+            on1b=on1b,
+            on2b=on2b,
+            on3b=on3b,
         )
 
         if where is None:
