@@ -747,7 +747,7 @@ async def get_pitch_prediction(
         return {
             "total": summary["total"],
             "recommendations": summary["pitchTypeOutcomes"][:6],
-            "model": "historical_linear_weights_v1",
+            "model": "empirical_outcome_distribution_v1",
         }
 
     except Exception as e:
