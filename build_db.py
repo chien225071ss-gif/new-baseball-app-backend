@@ -16,18 +16,29 @@ def create_database():
     conn = sqlite3.connect(db_file)
     start_year = int(os.getenv("START_YEAR", "2023"))
     current_year = int(os.getenv("END_YEAR", "2025"))
+    only_start_date = os.getenv("START_DATE")
+    only_end_date = os.getenv("END_DATE")
     
     print(f"🚀 開始建立 2015-{current_year} 棒球資料庫 (含姓名、出局標記與篩選器索引)...")
 
-    for year in range(start_year, current_year + 1):
-        for month in range(3, 12):
-            sub_periods = [
-                (f"{year}-{month:02d}-01", f"{year}-{month:02d}-15"),
-                (f"{year}-{month:02d}-16", f"{year}-{month:02d}-28")
-            ]
+    if only_start_date and only_end_date:
+        periods = [(int(only_start_date[:4]), [(only_start_date, only_end_date)])]
+    else:
+        periods = []
+        for year in range(start_year, current_year + 1):
+            year_periods = []
+            for month in range(3, 12):
+                year_periods.extend([
+                    (f"{year}-{month:02d}-01", f"{year}-{month:02d}-15"),
+                    (f"{year}-{month:02d}-16", f"{year}-{month:02d}-28")
+                ])
+            periods.append((year, year_periods))
+
+    for year, sub_periods in periods:
             
-            for start_d, end_d in sub_periods:
-                if month == 3 and "01" in start_d: start_d = f"{year}-03-20"
+        for start_d, end_d in sub_periods:
+                if not (only_start_date and only_end_date) and start_d[5:7] == "03" and start_d.endswith("-01"):
+                    start_d = f"{year}-03-20"
                 if start_d > datetime.date.today().strftime('%Y-%m-%d'): continue
 
                 try:
@@ -62,6 +73,7 @@ def create_database():
                     keep_cols = [
                         'game_date', 'pitch_type', 'balls', 'strikes', 'stand', 'p_throws', 
                         'on_1b', 'on_2b', 'on_3b', 'pitcher_role', 'inning', 'outs_when_up',
+                        'bat_score', 'fld_score', 'post_bat_score', 'post_fld_score',
                         'release_speed', 'plate_x', 'plate_z', 'description', 'type', 
                         'zone', 'player_name', 'pitcher', 'batter', 'events'
                     ]
@@ -89,10 +101,19 @@ def create_database():
                     df_to_save = df_to_save.dropna(subset=['pitch_type', 'plate_x', 'plate_z', 'balls', 'strikes'])
 
                     # 強制將球數轉為整數
+                    if 'game_date' in df_to_save.columns:
+                        df_to_save['game_date'] = pd.to_datetime(df_to_save['game_date']).dt.strftime('%Y-%m-%d')
                     df_to_save['balls'] = df_to_save['balls'].astype(int)
                     df_to_save['strikes'] = df_to_save['strikes'].astype(int)
                     if 'outs_when_up' in df_to_save.columns:
                         df_to_save['outs_when_up'] = df_to_save['outs_when_up'].fillna(0).astype(int)
+                    if {'bat_score', 'post_bat_score'}.issubset(df_to_save.columns):
+                        df_to_save['runs_on_pa'] = (
+                            pd.to_numeric(df_to_save['post_bat_score'], errors='coerce')
+                            - pd.to_numeric(df_to_save['bat_score'], errors='coerce')
+                        ).fillna(0).astype(int)
+                    else:
+                        df_to_save['runs_on_pa'] = 0
 
                     # 存入資料庫
                     df_to_save.to_sql("pitches", conn, if_exists="append", index=False)

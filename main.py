@@ -26,7 +26,8 @@ LOCAL_DESKTOP_DB_PATH = os.path.abspath(os.path.join(BASE_DIR, "..", "baseball_d
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 batter_name_map = {}
-TABLE_NAME = "pitches" 
+TABLE_NAME = "pitches"
+PITCH_COLUMNS = set()
 
 OUT_EVENTS = {
     "field_out", "strikeout", "force_out", "grounded_into_double_play",
@@ -101,6 +102,26 @@ def table_names(conn):
     tables = [row[0] for row in cursor.fetchall()]
     cursor.close()
     return tables
+
+def table_columns(conn, table_name):
+    cursor = conn.cursor()
+    if using_postgres():
+        cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = %s
+            """,
+            (table_name,),
+        )
+    else:
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        cols = [row[1] for row in cursor.fetchall()]
+        cursor.close()
+        return cols
+    cols = [row[0] for row in cursor.fetchall()]
+    cursor.close()
+    return cols
 
 def load_player_names(conn, player_ids):
     if not player_ids:
@@ -288,6 +309,15 @@ def pitch_run_value(outcome, balls=None, strikes=None):
         return -0.04 if s is not None and s < 2 else 0.01
     return 0.0
 
+def empirical_run_value(row, outcome):
+    runs_on_pa = row.get("runs_on_pa")
+    if runs_on_pa is not None:
+        try:
+            return float(runs_on_pa)
+        except (TypeError, ValueError):
+            pass
+    return pitch_run_value(outcome, row.get("balls"), row.get("strikes"))
+
 def summarize_outcomes(rows):
     total = len(rows)
     counts = {key: 0 for key in OUTCOME_ORDER}
@@ -308,7 +338,7 @@ def summarize_outcomes(rows):
                 "outcomes": {key: 0 for key in OUTCOME_ORDER},
             }
 
-        rv = pitch_run_value(outcome, row_dict.get("balls"), row_dict.get("strikes"))
+        rv = empirical_run_value(row_dict, outcome)
         pitch_types[pitch_type]["total"] += 1
         pitch_types[pitch_type]["runValue"] += rv
         pitch_types[pitch_type]["outcomes"][outcome] += 1
@@ -347,6 +377,12 @@ def summarize_outcomes(rows):
         "outcomes": outcomes,
         "pitchTypeOutcomes": pitch_type_outcomes,
     }
+
+def outcome_select_columns():
+    cols = ["pitch_type", "balls", "strikes", "description", "type", "events"]
+    if "runs_on_pa" in PITCH_COLUMNS:
+        cols.append("runs_on_pa")
+    return ", ".join(cols)
 
 def summarize_rows(rows):
     total = len(rows)
@@ -455,7 +491,7 @@ def summarize_rows(rows):
 
 @app.on_event("startup")
 async def startup_event():
-    global batter_name_map, TABLE_NAME
+    global batter_name_map, TABLE_NAME, PITCH_COLUMNS
 
     if not using_postgres():
         # --- 1. 下載邏輯 (使用 Dropbox 直連) ---
@@ -504,6 +540,7 @@ async def startup_event():
             print("警告: 資料庫中找不到任何資料表")
             conn.close()
             return
+        PITCH_COLUMNS = set(table_columns(conn, TABLE_NAME))
 
         print("正在讀取打者清單並進行名稱轉換 (這一步連線較久)...")
         u_ids = pd.read_sql(f"SELECT DISTINCT batter FROM {TABLE_NAME} WHERE batter IS NOT NULL", conn)["batter"].tolist()
@@ -694,7 +731,7 @@ async def get_pitch_outcomes(
             return summarize_outcomes([])
 
         query = f"""
-            SELECT pitch_type, balls, strikes, description, type, events
+            SELECT {outcome_select_columns()}
             FROM {TABLE_NAME}
             {where}
         """
@@ -738,7 +775,7 @@ async def get_pitch_prediction(
             return {"total": 0, "recommendations": []}
 
         query = f"""
-            SELECT pitch_type, balls, strikes, description, type, events
+            SELECT {outcome_select_columns()}
             FROM {TABLE_NAME}
             {where}
         """
