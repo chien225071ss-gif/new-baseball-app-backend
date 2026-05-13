@@ -28,17 +28,18 @@ def create_database():
         for year in range(start_year, current_year + 1):
             year_periods = []
             for month in range(3, 12):
-                year_periods.extend([
-                    (f"{year}-{month:02d}-01", f"{year}-{month:02d}-15"),
-                    (f"{year}-{month:02d}-16", f"{year}-{month:02d}-28")
-                ])
+                if month == 3:
+                    year_periods.append((f"{year}-03-20", f"{year}-03-31"))
+                else:
+                    year_periods.extend([
+                        (f"{year}-{month:02d}-01", f"{year}-{month:02d}-15"),
+                        (f"{year}-{month:02d}-16", f"{year}-{month:02d}-28")
+                    ])
             periods.append((year, year_periods))
 
     for year, sub_periods in periods:
             
         for start_d, end_d in sub_periods:
-                if not (only_start_date and only_end_date) and start_d[5:7] == "03" and start_d.endswith("-01"):
-                    start_d = f"{year}-03-20"
                 if start_d > datetime.date.today().strftime('%Y-%m-%d'): continue
 
                 try:
@@ -71,11 +72,13 @@ def create_database():
                     # 🎯 【核心欄位】：包含視覺化、統計、與搜尋所需的 ID/姓名
                     # balls, strikes (對應 COUNT), pitch_type (對應 PITCH TYPE) 已經在裡面了！
                     keep_cols = [
+                        'game_pk', 'at_bat_number', 'pitch_number',
                         'game_date', 'pitch_type', 'balls', 'strikes', 'stand', 'p_throws', 
                         'on_1b', 'on_2b', 'on_3b', 'pitcher_role', 'inning', 'outs_when_up',
                         'bat_score', 'fld_score', 'post_bat_score', 'post_fld_score',
                         'home_score', 'away_score', 'post_home_score', 'post_away_score',
-                        'inning_topbot', 'delta_home_win_exp', 'bat_win_exp',
+                        'inning_topbot', 'delta_run_exp', 'delta_home_win_exp',
+                        'home_win_exp', 'bat_win_exp',
                         'release_speed', 'plate_x', 'plate_z', 'description', 'type', 
                         'zone', 'player_name', 'pitcher', 'batter', 'events'
                     ]
@@ -117,11 +120,33 @@ def create_database():
                     else:
                         df_to_save['runs_on_pa'] = 0
 
+                    if 'delta_run_exp' in df_to_save.columns:
+                        df_to_save['delta_run_exp'] = pd.to_numeric(
+                            df_to_save['delta_run_exp'],
+                            errors='coerce',
+                        ).fillna(0)
+                    else:
+                        df_to_save['delta_run_exp'] = 0.0
+
+                    if 'home_win_exp' in df_to_save.columns:
+                        df_to_save['home_win_exp'] = pd.to_numeric(
+                            df_to_save['home_win_exp'],
+                            errors='coerce',
+                        )
+                    else:
+                        df_to_save['home_win_exp'] = None
+
                     if 'delta_home_win_exp' in df_to_save.columns:
                         df_to_save['delta_home_win_exp'] = pd.to_numeric(
                             df_to_save['delta_home_win_exp'],
                             errors='coerce',
                         ).fillna(0)
+                    elif {'game_pk', 'at_bat_number', 'pitch_number', 'home_win_exp'}.issubset(df_to_save.columns):
+                        order_cols = ['game_pk', 'at_bat_number', 'pitch_number']
+                        df_to_save = df_to_save.sort_values(order_cols)
+                        df_to_save['delta_home_win_exp'] = (
+                            df_to_save.groupby('game_pk')['home_win_exp'].diff().fillna(0)
+                        )
                     else:
                         df_to_save['delta_home_win_exp'] = 0.0
 

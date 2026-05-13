@@ -310,6 +310,13 @@ def pitch_run_value(outcome, balls=None, strikes=None):
     return 0.0
 
 def empirical_run_value(row, outcome):
+    delta_run_exp = row.get("delta_run_exp")
+    if delta_run_exp is not None:
+        try:
+            return float(delta_run_exp)
+        except (TypeError, ValueError):
+            pass
+
     runs_on_pa = row.get("runs_on_pa")
     if runs_on_pa is not None:
         try:
@@ -411,6 +418,8 @@ def summarize_outcomes(rows):
 
 def outcome_select_columns():
     cols = ["pitch_type", "balls", "strikes", "description", "type", "events"]
+    if "delta_run_exp" in PITCH_COLUMNS:
+        cols.append("delta_run_exp")
     if "runs_on_pa" in PITCH_COLUMNS:
         cols.append("runs_on_pa")
     if "pitcher_wpa" in PITCH_COLUMNS:

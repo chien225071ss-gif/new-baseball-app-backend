@@ -13,6 +13,9 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 BATCH_SIZE = int(os.getenv("POSTGRES_IMPORT_BATCH_SIZE", "10000"))
 
 COLUMNS = [
+    "game_pk",
+    "at_bat_number",
+    "pitch_number",
     "game_date",
     "pitch_type",
     "balls",
@@ -34,7 +37,9 @@ COLUMNS = [
     "post_home_score",
     "post_away_score",
     "inning_topbot",
+    "delta_run_exp",
     "delta_home_win_exp",
+    "home_win_exp",
     "bat_win_exp",
     "pitcher_wpa",
     "runs_on_pa",
@@ -53,6 +58,9 @@ COLUMNS = [
 
 CREATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS pitches (
+    game_pk INTEGER,
+    at_bat_number INTEGER,
+    pitch_number INTEGER,
     game_date TEXT,
     pitch_type TEXT,
     balls INTEGER,
@@ -74,7 +82,9 @@ CREATE TABLE IF NOT EXISTS pitches (
     post_home_score INTEGER,
     post_away_score INTEGER,
     inning_topbot TEXT,
+    delta_run_exp DOUBLE PRECISION,
     delta_home_win_exp DOUBLE PRECISION,
+    home_win_exp DOUBLE PRECISION,
     bat_win_exp DOUBLE PRECISION,
     pitcher_wpa DOUBLE PRECISION,
     runs_on_pa INTEGER,
