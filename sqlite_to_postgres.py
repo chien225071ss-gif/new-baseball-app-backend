@@ -29,6 +29,14 @@ COLUMNS = [
     "fld_score",
     "post_bat_score",
     "post_fld_score",
+    "home_score",
+    "away_score",
+    "post_home_score",
+    "post_away_score",
+    "inning_topbot",
+    "delta_home_win_exp",
+    "bat_win_exp",
+    "pitcher_wpa",
     "runs_on_pa",
     "release_speed",
     "plate_x",
@@ -61,6 +69,14 @@ CREATE TABLE IF NOT EXISTS pitches (
     fld_score INTEGER,
     post_bat_score INTEGER,
     post_fld_score INTEGER,
+    home_score INTEGER,
+    away_score INTEGER,
+    post_home_score INTEGER,
+    post_away_score INTEGER,
+    inning_topbot TEXT,
+    delta_home_win_exp DOUBLE PRECISION,
+    bat_win_exp DOUBLE PRECISION,
+    pitcher_wpa DOUBLE PRECISION,
     runs_on_pa INTEGER,
     release_speed DOUBLE PRECISION,
     plate_x DOUBLE PRECISION,
@@ -107,7 +123,15 @@ def main():
         cursor.execute(CREATE_TABLE_SQL)
         target.commit()
 
-    select_sql = f"SELECT {', '.join(COLUMNS)} FROM pitches"
+    source_columns = {
+        row[1]
+        for row in source.execute("PRAGMA table_info(pitches)").fetchall()
+    }
+    select_columns = [
+        column if column in source_columns else f"NULL AS {column}"
+        for column in COLUMNS
+    ]
+    select_sql = f"SELECT {', '.join(select_columns)} FROM pitches"
     insert_sql = f"INSERT INTO pitches ({', '.join(COLUMNS)}) VALUES %s"
     source_cursor = source.execute(select_sql)
 

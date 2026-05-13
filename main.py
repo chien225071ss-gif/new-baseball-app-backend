@@ -318,6 +318,25 @@ def empirical_run_value(row, outcome):
             pass
     return pitch_run_value(outcome, row.get("balls"), row.get("strikes"))
 
+def pitcher_wpa_value(row):
+    pitcher_wpa = row.get("pitcher_wpa")
+    if pitcher_wpa is not None:
+        try:
+            return float(pitcher_wpa)
+        except (TypeError, ValueError):
+            pass
+
+    delta_home_win_exp = row.get("delta_home_win_exp")
+    inning_topbot = str(row.get("inning_topbot") or "").lower()
+    if delta_home_win_exp is not None:
+        try:
+            delta = float(delta_home_win_exp)
+            return -delta if inning_topbot.startswith("bot") else delta
+        except (TypeError, ValueError):
+            pass
+
+    return None
+
 def summarize_outcomes(rows):
     total = len(rows)
     counts = {key: 0 for key in OUTCOME_ORDER}
@@ -335,12 +354,18 @@ def summarize_outcomes(rows):
             pitch_types[pitch_type] = {
                 "total": 0,
                 "runValue": 0.0,
+                "wpa": 0.0,
+                "wpaCount": 0,
                 "outcomes": {key: 0 for key in OUTCOME_ORDER},
             }
 
         rv = empirical_run_value(row_dict, outcome)
+        wpa = pitcher_wpa_value(row_dict)
         pitch_types[pitch_type]["total"] += 1
         pitch_types[pitch_type]["runValue"] += rv
+        if wpa is not None:
+            pitch_types[pitch_type]["wpa"] += wpa
+            pitch_types[pitch_type]["wpaCount"] += 1
         pitch_types[pitch_type]["outcomes"][outcome] += 1
 
     outcomes = [
@@ -358,11 +383,17 @@ def summarize_outcomes(rows):
             if count > 0
         ]
         expected_runs = round(data["runValue"] / type_total, 3) if type_total else 0
+        wpa_count = data.get("wpaCount", 0)
+        win_prob_change = (
+            round((data["wpa"] / wpa_count) * 100, 2)
+            if wpa_count
+            else round(-expected_runs * 9.0, 2)
+        )
         pitch_type_outcomes.append({
             "pitchType": pitch_type,
             "count": type_total,
             "expectedRuns": expected_runs,
-            "winProbChange": round(-expected_runs * 9.0, 2),
+            "winProbChange": win_prob_change,
             "outRate": pct(
                 data["outcomes"]["K"] + data["outcomes"]["Out"] + data["outcomes"]["DP"] + data["outcomes"]["FC"],
                 type_total,
@@ -382,6 +413,10 @@ def outcome_select_columns():
     cols = ["pitch_type", "balls", "strikes", "description", "type", "events"]
     if "runs_on_pa" in PITCH_COLUMNS:
         cols.append("runs_on_pa")
+    if "pitcher_wpa" in PITCH_COLUMNS:
+        cols.append("pitcher_wpa")
+    elif "delta_home_win_exp" in PITCH_COLUMNS and "inning_topbot" in PITCH_COLUMNS:
+        cols.extend(["delta_home_win_exp", "inning_topbot"])
     return ", ".join(cols)
 
 def summarize_rows(rows):

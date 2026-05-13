@@ -74,6 +74,8 @@ def create_database():
                         'game_date', 'pitch_type', 'balls', 'strikes', 'stand', 'p_throws', 
                         'on_1b', 'on_2b', 'on_3b', 'pitcher_role', 'inning', 'outs_when_up',
                         'bat_score', 'fld_score', 'post_bat_score', 'post_fld_score',
+                        'home_score', 'away_score', 'post_home_score', 'post_away_score',
+                        'inning_topbot', 'delta_home_win_exp', 'bat_win_exp',
                         'release_speed', 'plate_x', 'plate_z', 'description', 'type', 
                         'zone', 'player_name', 'pitcher', 'batter', 'events'
                     ]
@@ -114,6 +116,23 @@ def create_database():
                         ).fillna(0).astype(int)
                     else:
                         df_to_save['runs_on_pa'] = 0
+
+                    if 'delta_home_win_exp' in df_to_save.columns:
+                        df_to_save['delta_home_win_exp'] = pd.to_numeric(
+                            df_to_save['delta_home_win_exp'],
+                            errors='coerce',
+                        ).fillna(0)
+                    else:
+                        df_to_save['delta_home_win_exp'] = 0.0
+
+                    if 'inning_topbot' in df_to_save.columns:
+                        is_bottom = df_to_save['inning_topbot'].astype(str).str.lower().str.startswith('bot')
+                        df_to_save['pitcher_wpa'] = df_to_save['delta_home_win_exp'].where(
+                            ~is_bottom,
+                            -df_to_save['delta_home_win_exp'],
+                        )
+                    else:
+                        df_to_save['pitcher_wpa'] = 0.0
 
                     # 存入資料庫
                     df_to_save.to_sql("pitches", conn, if_exists="append", index=False)
