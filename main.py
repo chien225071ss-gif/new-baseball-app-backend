@@ -344,6 +344,22 @@ def pitcher_wpa_value(row):
 
     return None
 
+def batting_wpa_value(row):
+    pitcher_wpa = pitcher_wpa_value(row)
+    if pitcher_wpa is not None:
+        return -pitcher_wpa
+
+    delta_home_win_exp = row.get("delta_home_win_exp")
+    inning_topbot = str(row.get("inning_topbot") or "").lower()
+    if delta_home_win_exp is not None:
+        try:
+            delta = float(delta_home_win_exp)
+            return delta if inning_topbot.startswith("bot") else -delta
+        except (TypeError, ValueError):
+            pass
+
+    return None
+
 def summarize_outcomes(rows):
     total = len(rows)
     counts = {key: 0 for key in OUTCOME_ORDER}
@@ -367,7 +383,7 @@ def summarize_outcomes(rows):
             }
 
         rv = empirical_run_value(row_dict, outcome)
-        wpa = pitcher_wpa_value(row_dict)
+        wpa = batting_wpa_value(row_dict)
         pitch_types[pitch_type]["total"] += 1
         pitch_types[pitch_type]["runValue"] += rv
         if wpa is not None:
